@@ -4,24 +4,18 @@ import bodyParser from "body-parser";
 import axios from "axios";
 import { google } from "googleapis";
 import { GoogleAuth } from "google-auth-library";
-import path from "path";
-import { fileURLToPath } from "url";
 
 const app = express();
 app.use(bodyParser.json());
 
 // ------------------- CONFIG -------------------
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // Set this in Render secrets
-const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs"; // Your Sheet ID
-const VERIFY_TOKEN = "buena123token"; // Webhook verify token
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // Messenger token
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;       // Google Sheet ID
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;           // Webhook verify token
 
-// Resolve __dirname for ES Modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Google Sheets Auth
+// Google Sheets Auth using Render Secret File
 const auth = new GoogleAuth({
-  keyFile: path.join(__dirname, "buena-bot-1d5ec73d6dc9.json"), // JSON service account file
+  keyFile: "/run/secrets/google_service_account.json", // path to secret file
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
@@ -100,11 +94,11 @@ async function updateInventory(sheets, item, qty, action) {
     spreadsheetId: SPREADSHEET_ID,
     range,
   });
-  const rows = res.data.values || [];
+  const rows = res.data.values;
 
   for (let i = 0; i < rows.length; i++) {
     if (rows[i][0].toLowerCase() === item.toLowerCase()) {
-      let current = parseInt(rows[i][1]) || 0;
+      let current = parseInt(rows[i][1]);
       current = action === "add" ? current + qty : current - qty;
 
       await sheets.spreadsheets.values.update({
@@ -116,16 +110,6 @@ async function updateInventory(sheets, item, qty, action) {
       return;
     }
   }
-
-  // If item not found, add it
-  if (action === "add") {
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: "Sheet1!A:B",
-      valueInputOption: "RAW",
-      requestBody: { values: [[item, qty]] },
-    });
-  }
 }
 
 async function getInventory(sheets) {
@@ -133,7 +117,7 @@ async function getInventory(sheets) {
     spreadsheetId: SPREADSHEET_ID,
     range: "Sheet1!A:B",
   });
-  const rows = res.data.values || [];
+  const rows = res.data.values;
   return rows.map((r) => `${r[0]}: ${r[1]}`).join("\n");
 }
 
@@ -147,12 +131,12 @@ async function sendMessage(senderId, text) {
       }
     );
   } catch (err) {
-    console.error("❌ Error sending message:", err.response?.data || err.message);
+    console.error("❌ Send message error:", err.response?.data || err);
   }
 }
 
 // ------------------- START SERVER -------------------
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
-
-
+app.listen(PORT, () => {
+  console.log(`🚀 Server is running on port ${PORT}`);
+});
