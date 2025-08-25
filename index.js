@@ -103,3 +103,37 @@ async function updateInventory(sheets, item, qty, action) {
             let current = parseInt(rows[i][1]);
             current = action === "add" ? current + qty : current - qty;
             rows[i][1] = current.toString();
+
+            await sheets.spreadsheets.values.update({
+                spreadsheetId,
+                range: `Sheet1!B${i + 1}`,
+                valueInputOption: "RAW",
+                requestBody: { values: [[current]] },
+            });
+            console.log(`📊 Updated inventory: ${item} = ${current}`);
+            return;
+        }
+    }
+
+    // If item not found, add new row
+    await sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: "Sheet1!A:B",
+        valueInputOption: "RAW",
+        requestBody: { values: [[item, qty]] },
+    });
+    console.log(`➕ Added new item: ${item} = ${qty}`);
+}
+
+// 🔹 Show inventory
+async function getInventory(sheets) {
+    const res = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: "Sheet1!A:B",
+    });
+    const rows = res.data.values || [];
+    return rows.map(r => `${r[0]}: ${r[1]}`).join("\n");
+}
+
+// ✅ Start server
+app.listen(3000, () => console.log("🚀 Bot running on port 3000"));
