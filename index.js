@@ -10,12 +10,12 @@ app.use(bodyParser.json());
 
 // ------------------- CONFIG -------------------
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // Messenger token
-const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs";// Google Sheet ID
-const VERIFY_TOKEN = "buena123token";                   // Webhook verify token
+const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs"; // Google Sheet ID
+const VERIFY_TOKEN = "buena123token"; // Webhook verify token
 
 // Google Sheets Auth
 const auth = new GoogleAuth({
-  keyFile: "buena-bot-954020809440.json", // your service account JSON
+  keyFile: "buena-bot-954020809440.json", // service account JSON
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
@@ -125,3 +125,16 @@ async function sendMessage(senderId, text) {
   try {
     await axios.post(
       `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+      {
+        recipient: { id: senderId },
+        message: { text },
+      }
+    );
+  } catch (err) {
+    console.error("❌ Error sending message:", err.response?.data || err.message);
+  }
+}
+
+// ------------------- START SERVER -------------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
