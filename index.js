@@ -21,7 +21,7 @@ const __dirname = path.dirname(__filename);
 
 // Google Sheets Auth
 const auth = new GoogleAuth({
-  keyFile: path.join(__dirname, "buena-bot-954020809440.json"), // JSON service account file
+  keyFile: path.join(__dirname, "./buena-bot-954020809440.json"), // JSON service account file
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
@@ -154,3 +154,4 @@ async function sendMessage(senderId, text) {
 // ------------------- START SERVER -------------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
+
