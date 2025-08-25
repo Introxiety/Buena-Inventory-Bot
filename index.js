@@ -12,6 +12,22 @@ const auth = new google.auth.GoogleAuth({
 });
 
 const spreadsheetId = "YOUR_SHEET_ID"; // from the Google Sheet URL
+app.get("/webhook", (req, res) => {
+  const VERIFY_TOKEN = "buena123token"; // 👈 your custom token
+
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode && token) {
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      console.log("WEBHOOK_VERIFIED");
+      res.status(200).send(challenge); // ✅ must return challenge
+    } else {
+      res.sendStatus(403); // ❌ wrong token
+    }
+  }
+});
 
 // Messenger webhook
 app.post("/webhook", async (req, res) => {
@@ -69,3 +85,4 @@ async function getInventory(sheets) {
 }
 
 app.listen(3000, () => console.log("Bot running on port 3000"));
+
