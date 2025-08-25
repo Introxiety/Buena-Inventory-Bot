@@ -5,14 +5,18 @@ import { readFileSync } from "fs";
 import { GoogleAuth } from "google-auth-library";
 import { google } from "googleapis";
 
-// === CONFIG ===
+// ======================
+// CONFIGURATION
+// ======================
 
-// Read Google service account JSON from the same folder
+// Path to your Render secret file
+const SECRET_PATH = "/etc/secrets/google_service_account.json";
+
+// Read the service account JSON
 let serviceAccount;
 try {
-  serviceAccount = JSON.parse(
-    readFileSync("./google_service_account.json", "utf8")
-  );
+  serviceAccount = JSON.parse(readFileSync(SECRET_PATH, "utf8"));
+  console.log("Service account loaded successfully ✅");
 } catch (err) {
   console.error("Failed to read service account JSON:", err);
   process.exit(1);
@@ -24,27 +28,31 @@ const auth = new GoogleAuth({
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-// Spreadsheet ID
-const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID"; // <-- replace with your Sheet ID
-
 // Google Sheets API client
 const sheets = google.sheets({ version: "v4", auth });
 
-// === EXPRESS SERVER ===
+// Your spreadsheet ID
+const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID"; // <- replace with your sheet ID
 
+// ======================
+// EXPRESS SERVER
+// ======================
 const app = express();
 app.use(bodyParser.json());
 
-// Webhook endpoint
+app.get("/", (req, res) => {
+  res.send("Bot is running ✅");
+});
+
 app.post("/webhook", async (req, res) => {
   try {
     const message = req.body.entry[0].messaging[0].message.text;
     console.log("Incoming message:", message);
 
-    // Example: write message to Google Sheet
+    // Append to Google Sheet
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
-      range: "Sheet1!A:A", // write to column A
+      range: "Sheet1!A:A",
       valueInputOption: "RAW",
       requestBody: {
         values: [[message]],
@@ -58,13 +66,8 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// Health check
-app.get("/", (req, res) => {
-  res.send("Bot is running ✅");
-});
-
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Server listening on port ${PORT} 🌟`);
 });
