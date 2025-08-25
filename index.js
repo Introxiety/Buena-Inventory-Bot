@@ -6,42 +6,43 @@ const { google } = require("googleapis");
 const app = express();
 app.use(bodyParser.json());
 
-// Google Sheets setup
+// 🔹 Google Sheets setup
 const auth = new google.auth.GoogleAuth({
     keyFile: "credentials.json", // service account JSON
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-const spreadsheetId = "YOUR_SHEET_ID"; // 👈 put your Google Sheet ID
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // 👈 set in Render env
+const spreadsheetId = "YOUR_SHEET_ID"; // replace with your Google Sheet ID
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // 👈 must be set in Render env
 
-// Root route (for testing)
+// Root route (to fix "Cannot GET /")
 app.get("/", (req, res) => {
     res.send("✅ Messenger Inventory Bot is running!");
 });
 
-// Messenger verify webhook
+// 🔹 Messenger verify webhook
 app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = "buena123token"; // 👈 your verify token
+    const VERIFY_TOKEN = "buena123token"; // 👈 your custom verify token
 
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
 
-  if (mode && token) {
-    if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      console.log("WEBHOOK_VERIFIED");
-      res.status(200).send(challenge);
-    } else {
-      res.sendStatus(403);
+    if (mode && token) {
+        if (mode === "subscribe" && token === VERIFY_TOKEN) {
+            console.log("✅ WEBHOOK_VERIFIED");
+            res.status(200).send(challenge);
+        } else {
+            res.sendStatus(403);
+        }
     }
-  }
 });
 
-// Send message back to user
+// 🔹 Function to send message back to Messenger
 async function sendMessage(senderId, text) {
-    const url = `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
-    const res = await fetch(url, {
+    const url = `https://graph.facebook.com/v12.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
+    console.log(`📤 Sending message to ${senderId}: ${text}`);
+    await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -49,21 +50,23 @@ async function sendMessage(senderId, text) {
             message: { text }
         })
     });
-
-    const data = await res.json();
-    console.log("Send API response:", data);
 }
 
-// Messenger webhook (messages)
+// 🔹 Messenger webhook (message handler)
 app.post("/webhook", async (req, res) => {
+    console.log("📩 Incoming webhook:", JSON.stringify(req.body, null, 2)); // 👈 log all incoming events
     const body = req.body;
 
     if (body.object === "page") {
         for (const entry of body.entry) {
             const webhook_event = entry.messaging[0];
+            console.log("🔎 Event:", webhook_event);
+
             const senderId = webhook_event.sender.id;
 
             if (webhook_event.message && webhook_event.message.text) {
+                console.log("💬 Message text:", webhook_event.message.text);
+
                 const message = webhook_event.message.text.toLowerCase();
                 const sheets = google.sheets({ version: "v4", auth: await auth.getClient() });
 
@@ -89,51 +92,14 @@ app.post("/webhook", async (req, res) => {
     }
 });
 
-// Helper: Update inventory (add new item if not existing)
+// 🔹 Update inventory in Google Sheets
 async function updateInventory(sheets, item, qty, action) {
     const range = "Sheet1!A:B";
     const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-    const rows = res.data.values || [];
+    const rows = res.data.values;
 
-    let found = false;
     for (let i = 0; i < rows.length; i++) {
         if (rows[i][0].toLowerCase() === item.toLowerCase()) {
-            let current = parseInt(rows[i][1]) || 0;
+            let current = parseInt(rows[i][1]);
             current = action === "add" ? current + qty : current - qty;
             rows[i][1] = current.toString();
-
-            await sheets.spreadsheets.values.update({
-                spreadsheetId,
-                range: `Sheet1!B${i + 1}`,
-                valueInputOption: "RAW",
-                requestBody: { values: [[current]] },
-            });
-            found = true;
-            break;
-        }
-    }
-
-    if (!found) {
-        const newQty = action === "add" ? qty : -qty;
-        await sheets.spreadsheets.values.append({
-            spreadsheetId,
-            range: "Sheet1!A:B",
-            valueInputOption: "RAW",
-            requestBody: {
-                values: [[item, newQty]]
-            }
-        });
-    }
-}
-
-// Helper: Show inventory
-async function getInventory(sheets) {
-    const res = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: "Sheet1!A:B",
-    });
-    const rows = res.data.values || [];
-    return rows.map(r => `${r[0]}: ${r[1]}`).join("\n");
-}
-
-app.listen(3000, () => console.log("🚀 Bot running on port 3000"));
