@@ -4,18 +4,24 @@ import bodyParser from "body-parser";
 import axios from "axios";
 import { google } from "googleapis";
 import { GoogleAuth } from "google-auth-library";
+import path from "path";
+import { fileURLToPath } from "url";
 
 const app = express();
 app.use(bodyParser.json());
 
 // ------------------- CONFIG -------------------
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // Messenger token
-const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs"; // Google Sheet ID
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // Set this in Render secrets
+const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs"; // Your Sheet ID
 const VERIFY_TOKEN = "buena123token"; // Webhook verify token
 
-// ------------------- GOOGLE SHEETS AUTH -------------------
+// Resolve __dirname for ES Modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Google Sheets Auth
 const auth = new GoogleAuth({
-  keyFile: "buena-bot-954020809440.json", // service account JSON
+  keyFile: path.join(__dirname, "buena-bot-954020809440.json"), // JSON service account file
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
@@ -33,15 +39,16 @@ app.get("/webhook", (req, res) => {
   if (mode && token) {
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       console.log("✅ WEBHOOK_VERIFIED");
-      return res.status(200).send(challenge);
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
     }
-    return res.sendStatus(403);
   }
 });
 
-// ------------------- WEBHOOK POST -------------------
+// ------------------- WEBHOOK POST (MESSAGES) -------------------
 app.post("/webhook", async (req, res) => {
-  console.log("📩 Incoming webhook:", JSON.stringify(req.body, null, 2));
+  console.log("📩 Incoming webhook event:", JSON.stringify(req.body, null, 2));
 
   try {
     const body = req.body;
@@ -76,25 +83,28 @@ app.post("/webhook", async (req, res) => {
           );
         }
       }
-      return res.sendStatus(200);
+      res.sendStatus(200);
     } else {
-      return res.sendStatus(404);
+      res.sendStatus(404);
     }
   } catch (err) {
     console.error("❌ Webhook error:", err);
-    return res.sendStatus(500);
+    res.sendStatus(500);
   }
 });
 
-// ------------------- HELPERS -------------------
+// ------------------- HELPER FUNCTIONS -------------------
 async function updateInventory(sheets, item, qty, action) {
   const range = "Sheet1!A:B";
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range });
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
   const rows = res.data.values || [];
 
   for (let i = 0; i < rows.length; i++) {
     if (rows[i][0].toLowerCase() === item.toLowerCase()) {
-      let current = parseInt(rows[i][1] || "0");
+      let current = parseInt(rows[i][1]) || 0;
       current = action === "add" ? current + qty : current - qty;
 
       await sheets.spreadsheets.values.update({
@@ -107,14 +117,15 @@ async function updateInventory(sheets, item, qty, action) {
     }
   }
 
-  // If item not found, add a new row
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "Sheet1!A:B",
-    valueInputOption: "RAW",
-    insertDataOption: "INSERT_ROWS",
-    requestBody: { values: [[item, qty]] },
-  });
+  // If item not found, add it
+  if (action === "add") {
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:B",
+      valueInputOption: "RAW",
+      requestBody: { values: [[item, qty]] },
+    });
+  }
 }
 
 async function getInventory(sheets) {
@@ -136,7 +147,7 @@ async function sendMessage(senderId, text) {
       }
     );
   } catch (err) {
-    console.error("❌ Send message error:", err.response?.data || err.message);
+    console.error("❌ Error sending message:", err.response?.data || err.message);
   }
 }
 
