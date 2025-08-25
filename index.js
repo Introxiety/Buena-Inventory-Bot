@@ -1,73 +1,46 @@
 // index.js
-import express from "express";
-import bodyParser from "body-parser";
-import { readFileSync } from "fs";
 import { GoogleAuth } from "google-auth-library";
 import { google } from "googleapis";
+import fs from "fs";
 
-// ======================
-// CONFIGURATION
-// ======================
+// Path to your Render Secret file
+const SERVICE_ACCOUNT_FILE = "/etc/secrets/buena-bot-1d5ec73d6dc9.json";
 
-// Path to your Render secret file
-const SECRET_PATH = "/etc/secrets/google_service_account.json";
-
-// Read the service account JSON
+// Read and parse the service account JSON
 let serviceAccount;
 try {
-  serviceAccount = JSON.parse(readFileSync(SECRET_PATH, "utf8"));
-  console.log("Service account loaded successfully ✅");
-} catch (err) {
-  console.error("Failed to read service account JSON:", err);
-  process.exit(1);
+  const fileContent = fs.readFileSync(SERVICE_ACCOUNT_FILE, "utf8");
+  serviceAccount = JSON.parse(fileContent);
+} catch (error) {
+  console.error("Failed to read service account JSON:", error);
+  process.exit(1); // Stop execution if JSON cannot be read
 }
 
-// Initialize Google Auth
+// Create Google Auth client using the parsed credentials
 const auth = new GoogleAuth({
   credentials: serviceAccount,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-// Google Sheets API client
+// Initialize Google Sheets API client
 const sheets = google.sheets({ version: "v4", auth });
 
-// Your spreadsheet ID
-const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID"; // <- replace with your sheet ID
-
-// ======================
-// EXPRESS SERVER
-// ======================
-const app = express();
-app.use(bodyParser.json());
-
-app.get("/", (req, res) => {
-  res.send("Bot is running ✅");
-});
-
-app.post("/webhook", async (req, res) => {
+// Example function: read data from a spreadsheet
+async function readSheet(spreadsheetId, range) {
   try {
-    const message = req.body.entry[0].messaging[0].message.text;
-    console.log("Incoming message:", message);
-
-    // Append to Google Sheet
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: "Sheet1!A:A",
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [[message]],
-      },
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range,
     });
-
-    res.sendStatus(200);
+    console.log("Sheet data:", response.data.values);
+    return response.data.values;
   } catch (err) {
-    console.error("Webhook error:", err);
-    res.sendStatus(500);
+    console.error("Error reading spreadsheet:", err);
   }
-});
+}
 
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT} 🌟`);
-});
+// Example usage
+const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID_HERE"; // Replace with your actual spreadsheet ID
+const RANGE = "Sheet1!A1:C10"; // Change range as needed
+
+readSheet(SPREADSHEET_ID, RANGE);
