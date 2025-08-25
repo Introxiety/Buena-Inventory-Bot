@@ -13,7 +13,7 @@ const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // Messenger token
 const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs"; // Google Sheet ID
 const VERIFY_TOKEN = "buena123token"; // Webhook verify token
 
-// Google Sheets Auth
+// ------------------- GOOGLE SHEETS AUTH -------------------
 const auth = new GoogleAuth({
   keyFile: "buena-bot-954020809440.json", // service account JSON
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
@@ -33,16 +33,15 @@ app.get("/webhook", (req, res) => {
   if (mode && token) {
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       console.log("✅ WEBHOOK_VERIFIED");
-      res.status(200).send(challenge);
-    } else {
-      res.sendStatus(403);
+      return res.status(200).send(challenge);
     }
+    return res.sendStatus(403);
   }
 });
 
-// ------------------- WEBHOOK POST (MESSAGES) -------------------
+// ------------------- WEBHOOK POST -------------------
 app.post("/webhook", async (req, res) => {
-  console.log("📩 Incoming webhook event:", JSON.stringify(req.body, null, 2));
+  console.log("📩 Incoming webhook:", JSON.stringify(req.body, null, 2));
 
   try {
     const body = req.body;
@@ -77,28 +76,25 @@ app.post("/webhook", async (req, res) => {
           );
         }
       }
-      res.sendStatus(200);
+      return res.sendStatus(200);
     } else {
-      res.sendStatus(404);
+      return res.sendStatus(404);
     }
   } catch (err) {
     console.error("❌ Webhook error:", err);
-    res.sendStatus(500);
+    return res.sendStatus(500);
   }
 });
 
-// ------------------- HELPER FUNCTIONS -------------------
+// ------------------- HELPERS -------------------
 async function updateInventory(sheets, item, qty, action) {
   const range = "Sheet1!A:B";
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range,
-  });
-  const rows = res.data.values;
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range });
+  const rows = res.data.values || [];
 
   for (let i = 0; i < rows.length; i++) {
     if (rows[i][0].toLowerCase() === item.toLowerCase()) {
-      let current = parseInt(rows[i][1]);
+      let current = parseInt(rows[i][1] || "0");
       current = action === "add" ? current + qty : current - qty;
 
       await sheets.spreadsheets.values.update({
@@ -110,6 +106,15 @@ async function updateInventory(sheets, item, qty, action) {
       return;
     }
   }
+
+  // If item not found, add a new row
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SPREADSHEET_ID,
+    range: "Sheet1!A:B",
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: [[item, qty]] },
+  });
 }
 
 async function getInventory(sheets) {
@@ -117,7 +122,7 @@ async function getInventory(sheets) {
     spreadsheetId: SPREADSHEET_ID,
     range: "Sheet1!A:B",
   });
-  const rows = res.data.values;
+  const rows = res.data.values || [];
   return rows.map((r) => `${r[0]}: ${r[1]}`).join("\n");
 }
 
@@ -131,7 +136,7 @@ async function sendMessage(senderId, text) {
       }
     );
   } catch (err) {
-    console.error("❌ Error sending message:", err.response?.data || err.message);
+    console.error("❌ Send message error:", err.response?.data || err.message);
   }
 }
 
