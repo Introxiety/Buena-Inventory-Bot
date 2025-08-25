@@ -12,17 +12,17 @@ const auth = new google.auth.GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
-const spreadsheetId = "YOUR_SHEET_ID"; // from Google Sheet
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // 👈 add in Render env
+const spreadsheetId = "YOUR_SHEET_ID"; // 👈 put your Google Sheet ID
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN; // 👈 set in Render env
 
-// Root route (to fix "Cannot GET /")
+// Root route (for testing)
 app.get("/", (req, res) => {
     res.send("✅ Messenger Inventory Bot is running!");
 });
 
 // Messenger verify webhook
 app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = "buena123token"; // 👈 your custom token
+  const VERIFY_TOKEN = "buena123token"; // 👈 your verify token
 
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -38,10 +38,10 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// Send message function
+// Send message back to user
 async function sendMessage(senderId, text) {
-    const url = `https://graph.facebook.com/v12.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
-    await fetch(url, {
+    const url = `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
+    const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -49,6 +49,9 @@ async function sendMessage(senderId, text) {
             message: { text }
         })
     });
+
+    const data = await res.json();
+    console.log("Send API response:", data);
 }
 
 // Messenger webhook (messages)
@@ -86,15 +89,16 @@ app.post("/webhook", async (req, res) => {
     }
 });
 
-// Helper: Update inventory
+// Helper: Update inventory (add new item if not existing)
 async function updateInventory(sheets, item, qty, action) {
     const range = "Sheet1!A:B";
     const res = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-    const rows = res.data.values;
+    const rows = res.data.values || [];
 
+    let found = false;
     for (let i = 0; i < rows.length; i++) {
         if (rows[i][0].toLowerCase() === item.toLowerCase()) {
-            let current = parseInt(rows[i][1]);
+            let current = parseInt(rows[i][1]) || 0;
             current = action === "add" ? current + qty : current - qty;
             rows[i][1] = current.toString();
 
@@ -104,8 +108,21 @@ async function updateInventory(sheets, item, qty, action) {
                 valueInputOption: "RAW",
                 requestBody: { values: [[current]] },
             });
-            return;
+            found = true;
+            break;
         }
+    }
+
+    if (!found) {
+        const newQty = action === "add" ? qty : -qty;
+        await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: "Sheet1!A:B",
+            valueInputOption: "RAW",
+            requestBody: {
+                values: [[item, newQty]]
+            }
+        });
     }
 }
 
@@ -115,7 +132,7 @@ async function getInventory(sheets) {
         spreadsheetId,
         range: "Sheet1!A:B",
     });
-    const rows = res.data.values;
+    const rows = res.data.values || [];
     return rows.map(r => `${r[0]}: ${r[1]}`).join("\n");
 }
 
