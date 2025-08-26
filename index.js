@@ -13,7 +13,7 @@ const auth = google.auth.fromJSON(credentials);
 auth.scopes = ["https://www.googleapis.com/auth/spreadsheets"];
 const sheets = google.sheets({ version: "v4", auth });
 
-const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID"; // put your actual sheet id
+const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs"; // put your actual sheet id
 const RANGE = "Sheet1!A:D"; // Assuming columns: Item | Price | Quantity | Total
 
 // === Messenger Bot Setup ===
@@ -129,4 +129,5 @@ async function sendMessage(senderId, text) {
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
 
