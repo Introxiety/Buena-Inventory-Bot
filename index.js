@@ -6,7 +6,7 @@ import { google } from "googleapis";
 import fs from "fs";
 
 // === Google Sheets Setup ===
-const SERVICE_ACCOUNT_FILE = "/etc/secrets/buena-bot-1d5ec73d6dc9.json"; // Render path
+const SERVICE_ACCOUNT_FILE = "/etc/secrets/buena-bot-9f2ac8cdc6b3.json"; // Render path
 const credentials = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_FILE, "utf8"));
 
 const auth = google.auth.fromJSON(credentials);
@@ -129,3 +129,4 @@ async function sendMessage(senderId, text) {
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
