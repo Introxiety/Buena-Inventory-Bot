@@ -9,65 +9,258 @@ import fs from "fs";
 const SERVICE_ACCOUNT_FILE = "/etc/secrets/buena-bot-9f2ac8cdc6b3.json"; // Render path
 const credentials = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_FILE, "utf8"));
 
-const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
-const auth = new google.auth.GoogleAuth({
-  credentials,
-  scopes: SCOPES,
-});
+const auth = google.auth.fromJSON(credentials);
+auth.scopes = ["https://www.googleapis.com/auth/spreadsheets"];
 const sheets = google.sheets({ version: "v4", auth });
 
-const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs/edit?gid=2044996170#gid=2044996170"; // replace with your sheet ID
-const RANGE = "Sheet1!A:D"; // A=Item, B=?, C=Quantity, D=Price
+const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs";
+const RANGE = "Sheet1!A:D"; // Item | Price | Quantity | Total
 
-// === Express Setup ===
+// === Messenger Bot Setup ===
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+
 const app = express();
 app.use(bodyParser.json());
 
-// === Messenger Verify Webhook ===
-app.get("/", (req, res) => {
-  res.send("✅ Buena Bot is running!");
+// Session memory to track "Make Request" step
+const userSessions = {};
+// Simple cache for sheet rows
+let sheetCache = { rows: [], lastFetch: 0 };
+const CACHE_TTL = 5000; // 5 seconds
+
+// Helper: fetch rows with caching
+async function getRows() {
+  const now = Date.now();
+  if (sheetCache.rows.length && now - sheetCache.lastFetch < CACHE_TTL) {
+    return sheetCache.rows;
+  }
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: RANGE,
+  });
+  sheetCache.rows = res.data.values || [];
+  sheetCache.lastFetch = now;
+  return sheetCache.rows;
+}
+
+// Helper: batch update quantities
+async function batchUpdateQuantities(updates) {
+  const data = Object.entries(updates).map(([rowIndex, newQty]) => ({
+    range: `Sheet1!C${parseInt(rowIndex) + 1}`,
+    values: [[newQty]],
+  }));
+
+  if (!data.length) return;
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      valueInputOption: "RAW",
+      data,
+    },
+  });
+
+  // bust cache
+  sheetCache = { rows: [], lastFetch: 0 };
+}
+
+// Messenger webhook verification
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("✅ WEBHOOK_VERIFIED");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
 });
 
-// === Messenger Webhook ===
+// Messenger event listener
 app.post("/webhook", async (req, res) => {
   const body = req.body;
 
   if (body.object === "page") {
     for (const entry of body.entry) {
-      const event = entry.messaging[0];
-      if (event.message && event.message.text) {
-        const senderId = event.sender.id;
-        const text = event.message.text.trim();
+      const webhookEvent = entry.messaging[0];
+      const senderId = webhookEvent.sender.id;
 
-        let reply;
-        if (/^show request$/i.test(text)) {
-          reply = await handleShowRequest();
-        } else if (/^add\s+/i.test(text)) {
-          reply = await handleAddCommand(text);
-        } else if (/^make request$/i.test(text)) {
-          reply = await handleMakeRequest();
-        } else if (/^total$/i.test(text)) {
-          reply = await handleTotal();
-        } else if (await isAwaitingRequest(senderId)) {
-          reply = await handleMakeRequestInput(senderId, text);
-        } else {
-          reply = "🤖 Commands: Show Request | Add <item> <qty> | Make Request | Total";
+      if (webhookEvent.message && webhookEvent.message.text) {
+        const userMessage = webhookEvent.message.text.trim();
+        console.log("📩 User:", userMessage);
+
+        // If user is in Make Request session
+        if (userSessions[senderId] === "MAKE_REQUEST") {
+          const responseMsg = await handleMakeRequestInput(userMessage);
+          delete userSessions[senderId]; // end session
+          await sendMessage(senderId, responseMsg);
+          continue;
         }
 
-        await sendMessage(senderId, reply);
+        let responseMsg;
+        if (userMessage.toLowerCase().startsWith("add")) {
+          responseMsg = await handleAddCommand(userMessage);
+        } else if (userMessage.toLowerCase() === "show request") {
+          responseMsg = await handleShowRequest();
+        } else if (userMessage.toLowerCase() === "make request") {
+          responseMsg = await startMakeRequest(senderId);
+        } else if (userMessage.toLowerCase() === "total") {
+          responseMsg = await handleTotalCommand();
+        } else {
+          responseMsg =
+            "Sorry, I only understand:\n👉 Add 10 Pandecoco\n👉 Show Request\n👉 Make Request\n👉 Total";
+        }
+        await sendMessage(senderId, responseMsg);
       }
     }
-    res.sendStatus(200);
+    res.status(200).send("EVENT_RECEIVED");
   } else {
     res.sendStatus(404);
   }
 });
 
-// === Messenger Send Function ===
+// === Commands ===
+async function handleAddCommand(message) {
+  const regex = /add\s+(\d+)\s+(.+)/i;
+  const match = message.match(regex);
+  if (!match) return "❌ Could not understand. Try: Add 10 Pandecoco";
+
+  const quantity = parseInt(match[1], 10);
+  const itemName = match[2].trim().toLowerCase();
+
+  try {
+    const rows = await getRows();
+    let itemRowIndex = rows.findIndex(
+      (row) => row[0] && row[0].toLowerCase() === itemName
+    );
+
+    if (itemRowIndex >= 0) {
+      let currentQty = parseInt(rows[itemRowIndex][2] || "0", 10);
+      let newQty = currentQty + quantity;
+
+      await batchUpdateQuantities({ [itemRowIndex]: newQty });
+
+      return `✅ Added ${quantity} ${itemName}. New quantity: ${newQty}`;
+    } else {
+      return `❌ Item "${itemName}" not found in inventory.`;
+    }
+  } catch (err) {
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to update spreadsheet.";
+  }
+}
+
+async function handleShowRequest() {
+  try {
+    const rows = await getRows();
+    if (rows.length <= 1) return "❌ No items found.";
+
+    return (
+      "📋 Current Inventory:\n" +
+      rows
+        .slice(1)
+        .map(([item, , qty]) => (item ? `${item} - ${qty || 0}` : ""))
+        .filter(Boolean)
+        .join("\n")
+    );
+  } catch (err) {
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to read inventory.";
+  }
+}
+
+async function handleTotalCommand() {
+  try {
+    const rows = await getRows();
+    if (rows.length <= 1) return "❌ No items found.";
+
+    let grandTotal = 0;
+    let msg = "💰 Totals:\n";
+
+    for (let i = 1; i < rows.length; i++) {
+      const [item, , , total] = rows[i];
+      if (item && total) {
+        let value = parseFloat(total) || 0;
+        grandTotal += value;
+        msg += `${item} - ${value}\n`;
+      }
+    }
+
+    msg += `\nTOTAL = ${grandTotal}`;
+    return msg.trim();
+  } catch (err) {
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to calculate totals.";
+  }
+}
+
+async function startMakeRequest(senderId) {
+  try {
+    const rows = await getRows();
+    if (rows.length <= 1) return "❌ No items found.";
+
+    userSessions[senderId] = "MAKE_REQUEST";
+
+    return (
+      "📝 Please send me new quantities in this format:\n" +
+      rows
+        .slice(1)
+        .map(([item]) => item || "")
+        .filter(Boolean)
+        .join("\n")
+    );
+  } catch (err) {
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to load items.";
+  }
+}
+
+async function handleMakeRequestInput(userMessage) {
+  try {
+    const updates = {};
+    const lines = userMessage
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      const parts = line.split(/\s+/);
+      const qty = parseInt(parts.pop(), 10);
+      const item = parts.join(" ").toLowerCase();
+      if (item && !isNaN(qty)) updates[item] = qty;
+    }
+
+    const rows = await getRows();
+    const updateMap = {};
+
+    for (let i = 1; i < rows.length; i++) {
+      const item = rows[i][0];
+      if (item && updates[item.toLowerCase()] !== undefined) {
+        updateMap[i] = updates[item.toLowerCase()];
+      }
+    }
+
+    await batchUpdateQuantities(updateMap);
+
+    let confirmMsg = "✅ Updated quantities:\n";
+    for (const [item, qty] of Object.entries(updates)) {
+      confirmMsg += `${item} = ${qty}\n`;
+    }
+
+    return confirmMsg.trim();
+  } catch (err) {
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to update request.";
+  }
+}
+
+// === Messenger Send Message ===
 async function sendMessage(senderId, text) {
-  const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
   await axios.post(
-    `https://graph.facebook.com/v12.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
     {
       recipient: { id: senderId },
       message: { text },
@@ -75,183 +268,6 @@ async function sendMessage(senderId, text) {
   );
 }
 
-// === Command Handlers ===
-
-// Show Request
-async function handleShowRequest() {
-  try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: RANGE,
-    });
-
-    const rows = res.data.values || [];
-    if (rows.length <= 1) return "❌ No items found.";
-
-    let msg = "📋 Current Inventory:\n";
-    for (let i = 1; i < rows.length; i++) {
-      const [item, , qty] = rows[i];
-      if (item) msg += `${item} - ${qty || 0}\n`;
-    }
-
-    return msg.trim();
-  } catch (err) {
-    console.error("Google Sheets Error:", err);
-    return "❌ Failed to read inventory.";
-  }
-}
-
-// Add Command
-async function handleAddCommand(text) {
-  try {
-    const [, itemName, qtyStr] = text.split(/\s+/);
-    const qty = parseInt(qtyStr, 10);
-    if (!itemName || isNaN(qty)) return "❌ Usage: Add <item> <qty>";
-
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: RANGE,
-    });
-
-    const rows = res.data.values || [];
-    let found = false;
-    for (let i = 1; i < rows.length; i++) {
-      if (rows[i][0]?.toLowerCase() === itemName.toLowerCase()) {
-        const newQty = (parseInt(rows[i][2] || "0", 10) || 0) + qty;
-        rows[i][2] = newQty;
-
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: SPREADSHEET_ID,
-          range: `Sheet1!C${i + 1}`,
-          valueInputOption: "RAW",
-          requestBody: { values: [[newQty]] },
-        });
-
-        found = true;
-        return `✅ Updated ${itemName} - ${newQty}`;
-      }
-    }
-
-    if (!found) return `❌ Item "${itemName}" not found.`;
-  } catch (err) {
-    console.error("Google Sheets Error:", err);
-    return "❌ Failed to update.";
-  }
-}
-
-// Make Request (step 1 → show template)
-async function handleMakeRequest() {
-  try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: "Sheet1!A:A",
-    });
-
-    const rows = res.data.values || [];
-    if (rows.length <= 1) return "❌ No items found.";
-
-    let msg = "📋 Enter your request like this:\n";
-    for (let i = 1; i < rows.length; i++) {
-      const item = rows[i][0];
-      if (item) msg += `${item} <qty>\n`;
-    }
-
-    // mark awaiting request
-    awaitingRequestUsers.add("user"); // simple global marker for demo
-
-    return msg.trim();
-  } catch (err) {
-    console.error("Google Sheets Error:", err);
-    return "❌ Failed to load items.";
-  }
-}
-
-// Make Request (step 2 → batch update)
-const awaitingRequestUsers = new Set();
-
-async function isAwaitingRequest(senderId) {
-  return awaitingRequestUsers.has("user");
-}
-
-async function handleMakeRequestInput(senderId, input) {
-  try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: RANGE,
-    });
-
-    let rows = res.data.values || [];
-    if (rows.length <= 1) return "❌ No items found in sheet.";
-
-    const updates = {};
-    input.split("\n").forEach(line => {
-      const [item, qtyStr] = line.trim().split(/\s+/);
-      if (item && qtyStr) updates[item.toLowerCase()] = parseInt(qtyStr, 10) || 0;
-    });
-
-    // update in memory
-    for (let i = 1; i < rows.length; i++) {
-      const item = rows[i][0]?.toLowerCase();
-      if (item && updates[item] !== undefined) {
-        rows[i][2] = updates[item];
-      }
-    }
-
-    // batch update quantities
-    const newQuantities = rows.slice(1).map(r => [r[2] || 0]);
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `Sheet1!C2:C${rows.length}`,
-      valueInputOption: "RAW",
-      requestBody: { values: newQuantities },
-    });
-
-    awaitingRequestUsers.delete("user");
-
-    let msg = "✅ Request updated:\n";
-    for (const [item, qty] of Object.entries(updates)) {
-      msg += `${item} - ${qty}\n`;
-    }
-
-    return msg.trim();
-  } catch (err) {
-    console.error("Google Sheets Error:", err);
-    return "❌ Failed to update request.";
-  }
-}
-
-// Total Command
-async function handleTotal() {
-  try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: RANGE,
-    });
-
-    const rows = res.data.values || [];
-    if (rows.length <= 1) return "❌ No items found.";
-
-    let msg = "📊 Totals:\n";
-    let grandTotal = 0;
-
-    for (let i = 1; i < rows.length; i++) {
-      const [item, , qty, price] = rows[i];
-      const total = (parseInt(qty || "0", 10) || 0) * (parseFloat(price || "0") || 0);
-      if (item) {
-        msg += `${item} - ${total}\n`;
-        grandTotal += total;
-      }
-    }
-
-    msg += `\nTOTAL - ${grandTotal}`;
-    return msg.trim();
-  } catch (err) {
-    console.error("Google Sheets Error:", err);
-    return "❌ Failed to calculate total.";
-  }
-}
-
-// === Start Server ===
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
