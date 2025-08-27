@@ -8,88 +8,128 @@ import fs from "fs";
 // === Google Sheets Setup ===
 const SERVICE_ACCOUNT_FILE = "/etc/secrets/buena-bot-9f2ac8cdc6b3.json"; // Render path
 const credentials = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_FILE, "utf8"));
-const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
 
-const auth = new google.auth.GoogleAuth({
-  credentials,
-  scopes: SCOPES,
-});
+const auth = google.auth.fromJSON(credentials);
+auth.scopes = ["https://www.googleapis.com/auth/spreadsheets"];
 const sheets = google.sheets({ version: "v4", auth });
 
-// === Spreadsheet Setup ===
-const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID"; // replace with your ID
-const RANGE = "Sheet1!A:D"; // Assuming columns: Item | Price | Quantity | Total
+const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs";
+const RANGE = "Sheet1!A:D"; // Item | Price | Quantity | Total
 
-// === Express Setup ===
+// === Messenger Bot Setup ===
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+
 const app = express();
 app.use(bodyParser.json());
 
-// === Handle Messenger Webhook ===
-app.post("/webhook", async (req, res) => {
-  const message = req.body.message?.text;
-  let reply = "❌ I didn’t understand that.";
+// Session memory to track "Make Request" step
+const userSessions = {};
 
-  if (!message) {
-    return res.sendStatus(200);
+// Messenger webhook verification
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("✅ WEBHOOK_VERIFIED");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
   }
-
-  if (message.startsWith("Add")) {
-    reply = await handleAddCommand(message);
-  } else if (message === "Show Request") {
-    reply = await handleShowRequest();
-  } else if (message === "Make Request") {
-    reply = await handleMakeRequestTemplate();
-  } else if (await isMakeRequestResponse(message)) {
-    reply = await handleMakeRequest(message);
-  }
-
-  // send reply back to messenger (mocked here)
-  console.log("Bot Reply:", reply);
-  res.sendStatus(200);
 });
 
-// === Add Command (single item) ===
+// Messenger event listener
+app.post("/webhook", async (req, res) => {
+  const body = req.body;
+
+  if (body.object === "page") {
+    for (const entry of body.entry) {
+      const webhookEvent = entry.messaging[0];
+      const senderId = webhookEvent.sender.id;
+
+      if (webhookEvent.message && webhookEvent.message.text) {
+        const userMessage = webhookEvent.message.text.trim();
+        console.log("📩 User:", userMessage);
+
+        // If user is in Make Request session
+        if (userSessions[senderId] === "MAKE_REQUEST") {
+          const responseMsg = await handleMakeRequestInput(userMessage);
+          delete userSessions[senderId]; // end session
+          await sendMessage(senderId, responseMsg);
+          continue;
+        }
+
+        if (userMessage.toLowerCase().startsWith("add")) {
+          const responseMsg = await handleAddCommand(userMessage);
+          await sendMessage(senderId, responseMsg);
+        } else if (userMessage.toLowerCase() === "show request") {
+          const responseMsg = await handleShowRequest();
+          await sendMessage(senderId, responseMsg);
+        } else if (userMessage.toLowerCase() === "make request") {
+          const responseMsg = await startMakeRequest(senderId);
+          await sendMessage(senderId, responseMsg);
+        } else {
+          await sendMessage(
+            senderId,
+            "Sorry, I only understand:\n👉 Add 10 Pandecoco\n👉 Show Request\n👉 Make Request"
+          );
+        }
+      }
+    }
+    res.status(200).send("EVENT_RECEIVED");
+  } else {
+    res.sendStatus(404);
+  }
+});
+
+// === Commands ===
+
+// Add Command
 async function handleAddCommand(message) {
+  const regex = /add\s+(\d+)\s+(.+)/i;
+  const match = message.match(regex);
+
+  if (!match) return "❌ Could not understand. Try: Add 10 Pandecoco";
+
+  const quantity = parseInt(match[1], 10);
+  const itemName = match[2].trim();
+
   try {
-    const parts = message.split(" ");
-    if (parts.length < 3) return "❌ Usage: Add <item> <quantity>";
-
-    const itemName = parts[1];
-    const quantity = parseInt(parts[2], 10);
-    if (isNaN(quantity)) return "❌ Invalid quantity.";
-
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: RANGE,
     });
 
     const rows = res.data.values || [];
-    if (rows.length <= 1) return "❌ No inventory found.";
-
-    const itemRowIndex = rows.findIndex(
-      (row, idx) => idx > 0 && row[0].toLowerCase() === itemName.toLowerCase()
+    let itemRowIndex = rows.findIndex(
+      (row) => row[0] && row[0].toLowerCase() === itemName.toLowerCase()
     );
 
-    if (itemRowIndex < 0) return `❌ Item "${itemName}" not found.`;
+    if (itemRowIndex >= 0) {
+      let currentQty = parseInt(rows[itemRowIndex][2] || "0", 10);
+      let newQty = currentQty + quantity;
 
-    let currentQty = parseInt(rows[itemRowIndex][2] || "0", 10);
-    let newQty = currentQty + quantity;
+      // Update only the quantity column (C)
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `Sheet1!C${itemRowIndex + 1}`,
+        valueInputOption: "RAW",
+        requestBody: { values: [[newQty]] },
+      });
 
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `Sheet1!C${itemRowIndex + 1}`,
-      valueInputOption: "RAW",
-      requestBody: { values: [[newQty.toString()]] },
-    });
-
-    return `✅ Added ${quantity} ${itemName}. New quantity: ${newQty}`;
+      return `✅ Added ${quantity} ${itemName}. New quantity: ${newQty}`;
+    } else {
+      return `❌ Item "${itemName}" not found in inventory.`;
+    }
   } catch (err) {
-    console.error("Add Error:", err);
-    return "❌ Failed to update item.";
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to update spreadsheet.";
   }
 }
 
-// === Show Request (aligned formatting) ===
+// Show Request (with aligned columns)
 async function handleShowRequest() {
   try {
     const res = await sheets.spreadsheets.values.get({
@@ -100,32 +140,31 @@ async function handleShowRequest() {
     const rows = res.data.values || [];
     if (rows.length <= 1) return "❌ No items found.";
 
-    // Find longest item name for alignment
+    // Find longest item name for padding
     let maxLength = 0;
     for (let i = 1; i < rows.length; i++) {
       const [item] = rows[i];
       if (item && item.length > maxLength) maxLength = item.length;
     }
 
-    // Build aligned message
     let msg = "📋 Current Inventory:\n";
     for (let i = 1; i < rows.length; i++) {
       const [item, , qty] = rows[i];
       if (item) {
-        const paddedItem = item.padEnd(maxLength + 4, " ");
+        let paddedItem = item.padEnd(maxLength + 2, " "); // add spacing
         msg += `${paddedItem}${qty || 0}\n`;
       }
     }
 
     return msg.trim();
   } catch (err) {
-    console.error("Show Error:", err);
+    console.error("Google Sheets Error:", err);
     return "❌ Failed to read inventory.";
   }
 }
 
-// === Make Request (step 1: template) ===
-async function handleMakeRequestTemplate() {
+// Start Make Request
+async function startMakeRequest(senderId) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
@@ -135,88 +174,75 @@ async function handleMakeRequestTemplate() {
     const rows = res.data.values || [];
     if (rows.length <= 1) return "❌ No items found.";
 
-    let msg = "📝 Please send me the new quantities in this format:\n\n";
+    let msg = "📝 Please send me new quantities in this format:\n";
     for (let i = 1; i < rows.length; i++) {
       const [item] = rows[i];
       if (item) msg += `${item}\n`;
     }
 
+    userSessions[senderId] = "MAKE_REQUEST";
     return msg.trim();
   } catch (err) {
-    console.error("Template Error:", err);
-    return "❌ Failed to get item list.";
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to load items.";
   }
 }
 
-// === Detect if user reply is a Make Request response ===
-async function isMakeRequestResponse(message) {
-  return message.includes("\n") && message.split("\n")[0].includes(" ");
-}
-
-// === Make Request (step 2: update quantities) ===
-async function handleMakeRequest(message) {
+// Handle Make Request Input
+async function handleMakeRequestInput(userMessage) {
   try {
-    const lines = message.split("\n");
-    let updates = [];
+    const lines = userMessage.split("\n").map((l) => l.trim()).filter(Boolean);
 
-    for (let line of lines) {
-      const parts = line.trim().split(" ");
-      if (parts.length >= 2) {
-        const item = parts[0];
-        const qty = parseInt(parts[1], 10);
-        if (!isNaN(qty)) {
-          updates.push({ item, qty });
-        }
-      }
+    const updates = {};
+    for (const line of lines) {
+      const parts = line.split(/\s+/);
+      const qty = parseInt(parts.pop(), 10);
+      const item = parts.join(" ");
+      if (item && !isNaN(qty)) updates[item.toLowerCase()] = qty;
     }
-
-    if (updates.length === 0) return "❌ No valid items found.";
 
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: RANGE,
     });
-
     const rows = res.data.values || [];
 
-    let requests = [];
-    for (let update of updates) {
-      const idx = rows.findIndex(
-        (row, i) => i > 0 && row[0].toLowerCase() === update.item.toLowerCase()
-      );
-      if (idx >= 0) {
-        requests.push({
-          range: `Sheet1!C${idx + 1}`,
-          values: [[update.qty.toString()]],
+    for (let i = 1; i < rows.length; i++) {
+      const item = rows[i][0];
+      if (item && updates[item.toLowerCase()] !== undefined) {
+        const newQty = updates[item.toLowerCase()];
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SPREADSHEET_ID,
+          range: `Sheet1!C${i + 1}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [[newQty]] },
         });
       }
     }
 
-    if (requests.length === 0) return "❌ No matching items found.";
-
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      requestBody: {
-        valueInputOption: "RAW",
-        data: requests,
-      },
-    });
-
-    // Format confirmation with alignment
-    let maxLength = Math.max(...updates.map((u) => u.item.length));
-    let confirmation = "✅ Updated quantities:\n";
-    for (let u of updates) {
-      const paddedItem = u.item.padEnd(maxLength + 4, " ");
-      confirmation += `${paddedItem}${u.qty}\n`;
+    let confirmMsg = "✅ Updated quantities:\n";
+    for (const [item, qty] of Object.entries(updates)) {
+      confirmMsg += `${item} = ${qty}\n`;
     }
 
-    return confirmation.trim();
+    return confirmMsg.trim();
   } catch (err) {
-    console.error("MakeRequest Error:", err);
+    console.error("Google Sheets Error:", err);
     return "❌ Failed to update request.";
   }
 }
 
-// === Start Server ===
+// === Messenger Send Message ===
+async function sendMessage(senderId, text) {
+  await axios.post(
+    `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      recipient: { id: senderId },
+      message: { text },
+    }
+  );
+}
+
+// Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Bot server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
