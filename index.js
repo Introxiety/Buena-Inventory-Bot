@@ -16,7 +16,7 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: "v4", auth });
 
-const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID_HERE"; // replace with your sheet ID
+const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs/edit?gid=2044996170#gid=2044996170"; // replace with your sheet ID
 const RANGE = "Sheet1!A:D"; // A=Item, B=?, C=Quantity, D=Price
 
 // === Express Setup ===
@@ -254,3 +254,4 @@ async function handleTotal() {
 // === Start Server ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
