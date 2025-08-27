@@ -47,14 +47,19 @@ app.post("/webhook", async (req, res) => {
       const senderId = webhookEvent.sender.id;
 
       if (webhookEvent.message && webhookEvent.message.text) {
-        const userMessage = webhookEvent.message.text;
+        const userMessage = webhookEvent.message.text.trim();
         console.log("📩 User:", userMessage);
 
         if (userMessage.toLowerCase().startsWith("add")) {
           const responseMsg = await handleAddCommand(userMessage);
           await sendMessage(senderId, responseMsg);
+
+        } else if (userMessage.toLowerCase() === "show request") {
+          const responseMsg = await handleShowRequest();
+          await sendMessage(senderId, responseMsg);
+
         } else {
-          await sendMessage(senderId, "Sorry, I only understand commands like: Add 10 Pandecoco");
+          await sendMessage(senderId, "❌ I only understand commands like:\n- Add 10 Pandecoco\n- Show Request");
         }
       }
     }
@@ -110,6 +115,35 @@ async function handleAddCommand(message) {
   }
 }
 
+// === Show Request Handler ===
+async function handleShowRequest() {
+  try {
+    // Read from sheet (A = Item, C = Quantity)
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:C",
+    });
+
+    const rows = res.data.values || [];
+    if (rows.length <= 1) return "❌ No data found in the sheet.";
+
+    // Skip header row (index 0)
+    let responseLines = [];
+    for (let i = 1; i < rows.length; i++) {
+      const item = rows[i][0];
+      const qty = rows[i][2] || "0";
+      if (item) {
+        responseLines.push(`${item} ${qty}`);
+      }
+    }
+
+    return responseLines.join("\n"); // Combine into one message
+  } catch (err) {
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to fetch data from spreadsheet.";
+  }
+}
+
 // === Messenger Send Message ===
 async function sendMessage(senderId, text) {
   await axios.post(
@@ -124,4 +158,3 @@ async function sendMessage(senderId, text) {
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-``
