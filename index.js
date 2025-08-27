@@ -9,73 +9,37 @@ import fs from "fs";
 const SERVICE_ACCOUNT_FILE = "/etc/secrets/buena-bot-9f2ac8cdc6b3.json"; // Render path
 const credentials = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_FILE, "utf8"));
 
-const auth = google.auth.fromJSON(credentials);
-auth.scopes = ["https://www.googleapis.com/auth/spreadsheets"];
+const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
+const auth = new google.auth.GoogleAuth({
+  credentials,
+  scopes: SCOPES,
+});
 const sheets = google.sheets({ version: "v4", auth });
 
-const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs";
-const RANGE = "Sheet1!A:D"; // Item | Price | Quantity | Total
+const SPREADSHEET_ID = "YOUR_SPREADSHEET_ID"; // replace with your sheet id
+const RANGE = "Sheet1!A:C"; // item | price | qty | total (col D)
 
-// === Messenger Bot Setup ===
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-
+// === Express Setup ===
 const app = express();
 app.use(bodyParser.json());
 
-// Session memory to track "Make Request" step
-const userSessions = {};
-
-// Messenger webhook verification
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ WEBHOOK_VERIFIED");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
+// === Messenger Verify ===
+app.get("/", (req, res) => {
+  res.send("✅ Buena Bot is running");
 });
 
-// Messenger event listener
+// === Messenger Webhook ===
 app.post("/webhook", async (req, res) => {
   const body = req.body;
-
   if (body.object === "page") {
     for (const entry of body.entry) {
-      const webhookEvent = entry.messaging[0];
-      const senderId = webhookEvent.sender.id;
+      const event = entry.messaging[0];
+      if (event.message && event.message.text) {
+        const senderId = event.sender.id;
+        const text = event.message.text.trim();
 
-      if (webhookEvent.message && webhookEvent.message.text) {
-        const userMessage = webhookEvent.message.text.trim();
-        console.log("📩 User:", userMessage);
-
-        // If user is in Make Request session
-        if (userSessions[senderId] === "MAKE_REQUEST") {
-          const responseMsg = await handleMakeRequestInput(userMessage);
-          delete userSessions[senderId]; // end session
-          await sendMessage(senderId, responseMsg);
-          continue;
-        }
-
-        if (userMessage.toLowerCase().startsWith("add")) {
-          const responseMsg = await handleAddCommand(userMessage);
-          await sendMessage(senderId, responseMsg);
-        } else if (userMessage.toLowerCase() === "show request") {
-          const responseMsg = await handleShowRequest();
-          await sendMessage(senderId, responseMsg);
-        } else if (userMessage.toLowerCase() === "make request") {
-          const responseMsg = await startMakeRequest(senderId);
-          await sendMessage(senderId, responseMsg);
-        } else {
-          await sendMessage(
-            senderId,
-            "Sorry, I only understand:\n👉 Add 10 Pandecoco\n👉 Show Request\n👉 Make Request"
-          );
-        }
+        const response = await handleMessage(text);
+        await callSendAPI(senderId, response);
       }
     }
     res.status(200).send("EVENT_RECEIVED");
@@ -84,17 +48,31 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// === Commands ===
+// === Handle Message ===
+async function handleMessage(text) {
+  const command = text.split(" ")[0].toLowerCase();
+  let response = "❌ Unknown command.";
 
-// Add Command
-async function handleAddCommand(message) {
-  const regex = /add\s+(\d+)\s+(.+)/i;
-  const match = message.match(regex);
+  if (command === "add") {
+    response = await handleAddCommand(text);
+  } else if (command === "show" && text.toLowerCase().includes("request")) {
+    response = await handleShowRequest();
+  } else if (command === "make" && text.toLowerCase().includes("request")) {
+    response = await handleMakeRequest();
+  } else if (command === "total") {
+    response = await handleTotalRequest();
+  }
 
-  if (!match) return "❌ Could not understand. Try: Add 10 Pandecoco";
+  return response;
+}
 
-  const quantity = parseInt(match[1], 10);
-  const itemName = match[2].trim();
+// === ADD Command ===
+async function handleAddCommand(text) {
+  const parts = text.split(" ");
+  if (parts.length < 3) return "⚠️ Usage: Add ItemName Quantity";
+
+  const itemName = parts[1];
+  const qtyToAdd = parseInt(parts[2], 10);
 
   try {
     const res = await sheets.spreadsheets.values.get({
@@ -103,33 +81,27 @@ async function handleAddCommand(message) {
     });
 
     const rows = res.data.values || [];
-    let itemRowIndex = rows.findIndex(
-      (row) => row[0] && row[0].toLowerCase() === itemName.toLowerCase()
-    );
-
-    if (itemRowIndex >= 0) {
-      let currentQty = parseInt(rows[itemRowIndex][2] || "0", 10);
-      let newQty = currentQty + quantity;
-
-      // Update only the quantity column (C)
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `Sheet1!C${itemRowIndex + 1}`,
-        valueInputOption: "RAW",
-        requestBody: { values: [[newQty]] },
-      });
-
-      return `✅ Added ${quantity} ${itemName}. New quantity: ${newQty}`;
-    } else {
-      return `❌ Item "${itemName}" not found in inventory.`;
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i][0].toLowerCase() === itemName.toLowerCase()) {
+        let currentQty = parseInt(rows[i][2] || "0", 10);
+        let newQty = currentQty + qtyToAdd;
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SPREADSHEET_ID,
+          range: `Sheet1!C${i + 1}`,
+          valueInputOption: "RAW",
+          requestBody: { values: [[newQty]] },
+        });
+        return `✅ Updated ${itemName}: ${currentQty} → ${newQty}`;
+      }
     }
+    return `❌ Item "${itemName}" not found.`;
   } catch (err) {
     console.error("Google Sheets Error:", err);
-    return "❌ Failed to update spreadsheet.";
+    return "❌ Failed to update sheet.";
   }
 }
 
-// Show Request (with aligned columns)
+// === SHOW REQUEST ===
 async function handleShowRequest() {
   try {
     const res = await sheets.spreadsheets.values.get({
@@ -140,20 +112,10 @@ async function handleShowRequest() {
     const rows = res.data.values || [];
     if (rows.length <= 1) return "❌ No items found.";
 
-    // Find longest item name for padding
-    let maxLength = 0;
-    for (let i = 1; i < rows.length; i++) {
-      const [item] = rows[i];
-      if (item && item.length > maxLength) maxLength = item.length;
-    }
-
     let msg = "📋 Current Inventory:\n";
     for (let i = 1; i < rows.length; i++) {
       const [item, , qty] = rows[i];
-      if (item) {
-        let paddedItem = item.padEnd(maxLength + 2, " "); // add spacing
-        msg += `${paddedItem}${qty || 0}\n`;
-      }
+      if (item) msg += `${item} - ${qty || 0}\n`;
     }
 
     return msg.trim();
@@ -163,86 +125,72 @@ async function handleShowRequest() {
   }
 }
 
-// Start Make Request
-async function startMakeRequest(senderId) {
+// === MAKE REQUEST ===
+async function handleMakeRequest() {
   try {
+    // get item list first
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: RANGE,
+    });
+    const rows = res.data.values || [];
+    if (rows.length <= 1) return "❌ No items found.";
+
+    let msg = "📝 Please reply with your request in this format:\n\n";
+    for (let i = 1; i < rows.length; i++) {
+      const [item] = rows[i];
+      if (item) msg += `${item} <quantity>\n`;
+    }
+    return msg.trim();
+  } catch (err) {
+    console.error("Google Sheets Error:", err);
+    return "❌ Failed to fetch item list.";
+  }
+}
+
+// === TOTAL COMMAND ===
+async function handleTotalRequest() {
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "Sheet1!A:D", // col D is total (price*qty)
     });
 
     const rows = res.data.values || [];
     if (rows.length <= 1) return "❌ No items found.";
 
-    let msg = "📝 Please send me new quantities in this format:\n";
-    for (let i = 1; i < rows.length; i++) {
-      const [item] = rows[i];
-      if (item) msg += `${item}\n`;
-    }
-
-    userSessions[senderId] = "MAKE_REQUEST";
-    return msg.trim();
-  } catch (err) {
-    console.error("Google Sheets Error:", err);
-    return "❌ Failed to load items.";
-  }
-}
-
-// Handle Make Request Input
-async function handleMakeRequestInput(userMessage) {
-  try {
-    const lines = userMessage.split("\n").map((l) => l.trim()).filter(Boolean);
-
-    const updates = {};
-    for (const line of lines) {
-      const parts = line.split(/\s+/);
-      const qty = parseInt(parts.pop(), 10);
-      const item = parts.join(" ");
-      if (item && !isNaN(qty)) updates[item.toLowerCase()] = qty;
-    }
-
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: RANGE,
-    });
-    const rows = res.data.values || [];
+    let msg = "💰 Sales Total:\n";
+    let grandTotal = 0;
 
     for (let i = 1; i < rows.length; i++) {
-      const item = rows[i][0];
-      if (item && updates[item.toLowerCase()] !== undefined) {
-        const newQty = updates[item.toLowerCase()];
-        await sheets.spreadsheets.values.update({
-          spreadsheetId: SPREADSHEET_ID,
-          range: `Sheet1!C${i + 1}`,
-          valueInputOption: "RAW",
-          requestBody: { values: [[newQty]] },
-        });
+      const [item, , , total] = rows[i];
+      if (item && total) {
+        const num = parseFloat(total) || 0;
+        msg += `${item} - ${num}\n`;
+        grandTotal += num;
       }
     }
 
-    let confirmMsg = "✅ Updated quantities:\n";
-    for (const [item, qty] of Object.entries(updates)) {
-      confirmMsg += `${item} = ${qty}\n`;
-    }
-
-    return confirmMsg.trim();
+    msg += `\nTOTAL = ${grandTotal}`;
+    return msg.trim();
   } catch (err) {
     console.error("Google Sheets Error:", err);
-    return "❌ Failed to update request.";
+    return "❌ Failed to calculate totals.";
   }
 }
 
-// === Messenger Send Message ===
-async function sendMessage(senderId, text) {
+// === Send API ===
+async function callSendAPI(senderId, message) {
+  const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
   await axios.post(
     `https://graph.facebook.com/v17.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
     {
       recipient: { id: senderId },
-      message: { text },
+      message: { text: message },
     }
   );
 }
 
-// Start server
+// === Start Server ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
