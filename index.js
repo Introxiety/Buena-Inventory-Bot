@@ -13,7 +13,7 @@ const auth = google.auth.fromJSON(credentials);
 auth.scopes = ["https://www.googleapis.com/auth/spreadsheets"];
 const sheets = google.sheets({ version: "v4", auth });
 
-const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs"; // put your actual sheet id
+const SPREADSHEET_ID = "1Ul8xKfm-gEG2_nyAUsvx1B7mVu9GcjAkPNdW8fHaDTs"; // your sheet id
 const RANGE = "Sheet1!A:D"; // Assuming columns: Item | Price | Quantity | Total
 
 // === Messenger Bot Setup ===
@@ -88,20 +88,15 @@ async function handleAddCommand(message) {
     let itemRowIndex = rows.findIndex(row => row[0] && row[0].toLowerCase() === itemName.toLowerCase());
 
     if (itemRowIndex >= 0) {
-      // Update quantity
+      // Update quantity only
       let currentQty = parseInt(rows[itemRowIndex][2] || "0", 10);
-      let price = parseFloat(rows[itemRowIndex][1] || "0");
       let newQty = currentQty + quantity;
-      let newTotal = price * newQty;
-
-      rows[itemRowIndex][2] = newQty.toString();
-      rows[itemRowIndex][3] = newTotal.toString();
 
       await sheets.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID,
-        range: `Sheet1!A${itemRowIndex + 1}:D${itemRowIndex + 1}`,
+        range: `Sheet1!C${itemRowIndex + 1}`, // only the Quantity column
         valueInputOption: "RAW",
-        requestBody: { values: [rows[itemRowIndex]] },
+        requestBody: { values: [[newQty.toString()]] },
       });
 
       return `✅ Added ${quantity} ${itemName}. New quantity: ${newQty}`;
@@ -129,5 +124,4 @@ async function sendMessage(senderId, text) {
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
-
+``
